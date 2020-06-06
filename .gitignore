@@ -1,2 +1,27 @@
+# mac
+.DS_Store
+
+# other?
+.history
+.scala_dependencies
+.cache
+.cache-main
+
+#general
 *.class
+
+# intellij idea
 *.log
+*.iml
+*.ipr
+*.iws
+.idea
+
+# sbt
+bin/
+project/
+target/
+build/
+
+# metals 
+project/metals.sbt

@@ -1,0 +1,4 @@
+<plugin>
+    <name>profiler-plugin</name>
+    <classname>com.thecookiezen.ProfilerPlugin</classname>
+</plugin>
