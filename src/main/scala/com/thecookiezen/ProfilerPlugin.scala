@@ -94,14 +94,13 @@ class ProfilerPlugin(val global: Global) extends Plugin {
     private def reportStatistics(graphsPath: Path): Unit = {
       val macroProfiler = implementation.macroProfiler
       val persistedGraphData = implementation.generateGraphData(graphsPath)
+
       persistedGraphData.foreach(p => logger.info(s"Writing graph to $p"))
 
       if (config.showProfiles) {
         logger.info("Macro data per call-site", macroProfiler.perCallSite)
         logger.info("Macro data per file", macroProfiler.perFile)
         logger.info("Macro data in total", macroProfiler.inTotal)
-        val expansions = macroProfiler.repeatedExpansions.map(showExpansion)
-        logger.info("Macro repeated expansions", expansions)
 
         val macrosType = implementation.macrosByType.toList.sortBy(_._2)
         val macrosTypeLines = global.exitingTyper(macrosType.map(kv => kv._1.toString -> kv._2))

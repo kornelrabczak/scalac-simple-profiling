@@ -3,9 +3,10 @@ package com.thecookiezen.tools
 import java.nio.file.{Files, Path, StandardOpenOption}
 
 import scala.tools.nsc.Global
-
 import scala.reflect.internal.util.StatisticsStatics
 import com.thecookiezen.ProfilerPlugin.PluginConfig
+import com.thecookiezen.tools.Profiling.MacroInfo
+import pprint.{TPrint, TPrintLowPri}
 
 final class Profiling[G <: Global](override val global: G, config: PluginConfig, logger: Logger[G]) extends ProfilingStats {
   import global._
@@ -16,38 +17,12 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
     analyzer.addAnalyzerPlugin(ProfilingAnalyzerPlugin)
   }
 
-  /**
-    * Represents the profiling information about expanded macros.
-    *
-    * Note that we could derive the value of expanded macros from the
-    * number of instances of [[MacroInfo]] if it were not by the fact
-    * that a macro can expand in the same position more than once. We
-    * want to be able to report/analyse such cases on their own, so
-    * we keep it as a paramater of this entity.
-    */
-  case class MacroInfo(expandedMacros: Int, expandedNodes: Int, expansionNanos: Long) {
-    def +(other: MacroInfo): MacroInfo = {
-      val totalExpanded = expandedMacros + other.expandedMacros
-      val totalNodes = expandedNodes + other.expandedNodes
-      val totalTime = expansionNanos + other.expansionNanos
-      MacroInfo(totalExpanded, totalNodes, totalTime)
-    }
-  }
-
-  object MacroInfo {
-    final val Empty = MacroInfo(0, 0, 0L)
-    implicit val macroInfoOrdering: Ordering[MacroInfo] = Ordering.by(_.expansionNanos)
-    def aggregate(infos: Iterator[MacroInfo]): MacroInfo = {
-      infos.foldLeft(MacroInfo.Empty)(_ + _)
-    }
-  }
-
   import scala.reflect.internal.util.SourceFile
+
   case class MacroProfiler(
       perCallSite: Map[Position, MacroInfo],
       perFile: Map[SourceFile, MacroInfo],
-      inTotal: MacroInfo,
-      repeatedExpansions: Map[Tree, Int]
+      inTotal: MacroInfo
   )
 
   def toMillis(nanos: Long): Long =
@@ -76,7 +51,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
       .mapValues(i => i.copy(expansionNanos = toMillis(i.expansionNanos)))
       .toMap
 
-    MacroProfiler(callSiteNanos, perFile, inTotal, Map.empty)
+    MacroProfiler(callSiteNanos, perFile, inTotal)
   }
 
   case class ImplicitInfo(count: Int) {
@@ -157,7 +132,6 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
   private var implicitsStack: List[Entry] = Nil
 
   private object ProfilingAnalyzerPlugin extends global.analyzer.AnalyzerPlugin {
-    import scala.collection.mutable
     private val implicitsTimers = perRunCaches.newAnyRefMap[Type, statistics.Timer]()
     private val searchIdsToTargetTypes = perRunCaches.newMap[Int, Type]()
     private val stackedNanos = perRunCaches.newMap[Int, (Long, Type)]()
@@ -574,3 +548,34 @@ trait ProfilingStats {
   final val implicitSearchesByPos = global.perRunCaches.newMap[Position, Int]()
 }
 
+object Profiling {
+  /**
+   * Represents the profiling information about expanded macros.
+   *
+   * Note that we could derive the value of expanded macros from the
+   * number of instances of [[MacroInfo]] if it were not by the fact
+   * that a macro can expand in the same position more than once. We
+   * want to be able to report/analyse such cases on their own, so
+   * we keep it as a paramater of this entity.
+   */
+  case class MacroInfo(expandedMacros: Int, expandedNodes: Int, expansionNanos: Long) {
+    def +(other: MacroInfo): MacroInfo = {
+      val totalExpanded = expandedMacros + other.expandedMacros
+      val totalNodes = expandedNodes + other.expandedNodes
+      val totalTime = expansionNanos + other.expansionNanos
+      MacroInfo(totalExpanded, totalNodes, totalTime)
+    }
+  }
+
+  object MacroInfo {
+    final val Empty = MacroInfo(0, 0, 0L)
+    implicit val macroInfoOrdering: Ordering[MacroInfo] = Ordering.by(_.expansionNanos)
+    def aggregate(infos: Iterator[MacroInfo]): MacroInfo = {
+      infos.foldLeft(MacroInfo.Empty)(_ + _)
+    }
+
+    implicit val intPrint: TPrint[Int] = TPrint.default[Int]
+    implicit val stringPrint: TPrint[String] = TPrint.default[String]
+    implicit val macroInfoPrint: TPrint[MacroInfo] = TPrint.default[MacroInfo]
+  }
+}
