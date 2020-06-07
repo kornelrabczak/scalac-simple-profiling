@@ -25,3 +25,5 @@ build/
 
 # metals 
 project/metals.sbt
+.metals
+.bloop
