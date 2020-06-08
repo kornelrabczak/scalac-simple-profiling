@@ -432,7 +432,14 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
 
                 statistics.stopTimer(macroTimer, head.start)
                 val previousNanos = stackedNanos.getOrElse(macroId, 0L)
-                stackedNanos.+=((macroId, macroTimer.nanos + previousNanos))
+
+                // Updates expansionNanos time after super.apply() for MacroInfo at the specified position
+                val nanosPassed = macroTimer.nanos + previousNanos
+                macroInfos.get(desugared.pos).foreach { oldMacroInfo =>
+                  macroInfos.update(desugared.pos, oldMacroInfo.copy(expansionNanos = nanosPassed))
+                }
+
+                stackedNanos.+=((macroId, nanosPassed))
                 prevData match {
                   case Some((prevTimer, prev)) =>
                     // Let's restart the timer of the previous macro expansion
