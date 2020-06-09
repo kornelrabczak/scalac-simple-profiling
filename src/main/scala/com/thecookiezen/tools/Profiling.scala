@@ -4,9 +4,10 @@ import java.nio.file.{Files, Path, StandardOpenOption}
 
 import scala.tools.nsc.Global
 import scala.reflect.internal.util.StatisticsStatics
+import scala.collection.mutable
 import com.thecookiezen.ProfilerPlugin.PluginConfig
 import com.thecookiezen.tools.Profiling.MacroInfo
-import pprint.{TPrint, TPrintLowPri}
+import pprint.TPrint
 
 final class Profiling[G <: Global](override val global: G, config: PluginConfig, logger: Logger[G]) extends ProfilingStats {
   import global._
@@ -109,10 +110,12 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
     val implicitGraphName = s"implicit-searches-$randomId"
     val macroGraphName = s"macros-$randomId"
     val implicitFlamegraphFile = outputDir.resolve(s"$implicitGraphName.flamegraph")
-    ProfilingAnalyzerPlugin.foldImplicitStacks(implicitFlamegraphFile)
+    val implicits = ProfilingAnalyzerPlugin.getImplicitStacks
+    Files.write(implicitFlamegraphFile, implicits, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
     if (config.generateMacroFlamegraph) {
       val macroFlamegraphFile = outputDir.resolve(s"$macroGraphName.flamegraph")
-      ProfilingMacroPlugin.foldMacroStacks(macroFlamegraphFile)
+      val macroStacks = ProfilingMacroPlugin.getMacroStacks
+      Files.write(macroFlamegraphFile, macroStacks, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
       List(implicitFlamegraphFile, macroFlamegraphFile)
     } else List(implicitFlamegraphFile)
   }
@@ -131,27 +134,30 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
   private type Entry = (global.analyzer.ImplicitSearch, statistics.TimerSnapshot, statistics.TimerSnapshot)
   private var implicitsStack: List[Entry] = Nil
 
+  object FoldableStack {
+    def fold(name: String)(names: mutable.Map[Int, List[String]], times: mutable.Map[Int, Long]): java.util.ArrayList[String] = {
+      val stacksJavaList = new java.util.ArrayList[String]()
+
+      times.foreach {
+        case (id, nanos) =>
+          val stackNames = names.getOrElse(id, sys.error(s"Stack name for $name id ${id} doesn't exist!"))
+          val stackName = stackNames.mkString(";")
+          stacksJavaList.add(s"$stackName ${nanos / 1000}")
+      }
+
+      java.util.Collections.sort(stacksJavaList)
+      stacksJavaList
+    }
+  } 
+
   private object ProfilingAnalyzerPlugin extends global.analyzer.AnalyzerPlugin {
     private val implicitsTimers = perRunCaches.newAnyRefMap[Type, statistics.Timer]()
-    private val searchIdsToTargetTypes = perRunCaches.newMap[Int, Type]()
-    private val stackedNanos = perRunCaches.newMap[Int, (Long, Type)]()
+    private val stackedNanos = perRunCaches.newMap[Int, Long]()
     private val stackedNames = perRunCaches.newMap[Int, List[String]]()
     private val searchIdsToTimers = perRunCaches.newMap[Int, statistics.Timer]()
     private val searchIdChildren = perRunCaches.newMap[Int, List[analyzer.ImplicitSearch]]()
 
-    def foldImplicitStacks(outputPath: Path): Unit = {
-      // This part is memory intensive and hence the use of java collections
-      val stacksJavaList = new java.util.ArrayList[String]()
-      stackedNanos.foreach {
-        case (id, (nanos, _)) =>
-          val names =
-            stackedNames.getOrElse(id, sys.error(s"Stack name for search id ${id} doesn't exist!"))
-          val stackName = names.mkString(";")
-          stacksJavaList.add(s"$stackName ${nanos / 1000}")
-      }
-      java.util.Collections.sort(stacksJavaList)
-      Files.write(outputPath, stacksJavaList, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
-    }
+    def getImplicitStacks = FoldableStack.fold("search")(stackedNames, stackedNanos)
 
     private def getImplicitTimerFor(candidate: Type): statistics.Timer =
       implicitsTimers.getOrElse(candidate, sys.error(s"Timer for ${candidate} doesn't exist"))
@@ -205,8 +211,6 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
         implicitSearchesByPos.update(targetPos, posCounter + 1)
         if (global.analyzer.openMacros.nonEmpty)
           statistics.incCounter(implicitSearchesByMacrosCount)
-
-        searchIdsToTargetTypes.+=((search.searchId, targetType))
 
         implicitsStack = (search, implicitTypeStart, searchStart) :: implicitsStack
       }
@@ -283,10 +287,9 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
 
           // Save the nanos for this implicit search
           val searchTimer = getSearchTimerFor(searchId)
-          val stackedType = searchIdsToTargetTypes.getOrElse(searchId, missing("stack type"))
           statistics.stopTimer(searchTimer, searchStart)
-          val (previousNanos, _) = stackedNanos.getOrElse(searchId, (0L, stackedType))
-          stackedNanos.+=((searchId, ((searchTimer.nanos + previousNanos), stackedType)))
+          val previousNanos = stackedNanos.getOrElse(searchId, 0L)
+          stackedNanos.+=((searchId, searchTimer.nanos + previousNanos))
         }
 
         // 3. Reset the stack and stop timer if there is a dependant search
@@ -341,19 +344,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
     private val stackedNanos = perRunCaches.newMap[Int, Long]()
     private val stackedNames = perRunCaches.newMap[Int, List[String]]()
 
-    def foldMacroStacks(outputPath: Path): Unit = {
-      // This part is memory intensive and hence the use of java collections
-      val stacksJavaList = new java.util.ArrayList[String]()
-      stackedNanos.foreach {
-        case (id, nanos) =>
-          val names =
-            stackedNames.getOrElse(id, sys.error(s"Stack name for macro id ${id} doesn't exist!"))
-          val stackName = names.mkString(";")
-          stacksJavaList.add(s"$stackName ${nanos / 1000}")
-      }
-      java.util.Collections.sort(stacksJavaList)
-      Files.write(outputPath, stacksJavaList, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
-    }
+    def getMacroStacks = FoldableStack.fold("macro")(stackedNames, stackedNanos)
 
     import scala.tools.nsc.Mode
     override def pluginsMacroExpand(t: Typer, expandee: Tree, md: Mode, pt: Type): Option[Tree] = {
