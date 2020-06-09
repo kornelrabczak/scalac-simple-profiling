@@ -59,7 +59,7 @@ class ProfilerPlugin(val global: Global) extends Plugin {
     }
   }
 
-  override def init(ops: List[String], e: (String) => Unit): Boolean = true
+  override def init(ops: List[String], e: String => Unit): Boolean = true
 
   private def pad20(option: String): String = option + (" " * (20 - option.length))
 
@@ -74,7 +74,6 @@ class ProfilerPlugin(val global: Global) extends Plugin {
 
     override val global: implementation.global.type = implementation.global
 
-    import scala.collection.mutable.LinkedHashMap
     override val phaseName: String = "scalac-profiling"
     override val runsAfter: List[String] = List("jvm")
     override val runsBefore: List[String] = List("terminal")
@@ -105,9 +104,9 @@ class ProfilerPlugin(val global: Global) extends Plugin {
         val macrosType = implementation.macrosByType.toList.sortBy(_._2)
         val macrosTypeLines = global.exitingTyper(macrosType.map(kv => kv._1.toString -> kv._2))
 
-        logger.info("Macro expansions by type", toLinkedHashMap(macrosTypeLines))
+        logger.info("Macro expansions by type", macrosTypeLines.toMap)
 
-        val implicitSearchesPosition = toLinkedHashMap(implementation.implicitSearchesByPos.toList.sortBy(_._2))
+        val implicitSearchesPosition = implementation.implicitSearchesByPos.toList.sortBy(_._2).toMap
 
         logger.info("Implicit searches by position", implicitSearchesPosition)
 
@@ -118,18 +117,9 @@ class ProfilerPlugin(val global: Global) extends Plugin {
           global.exitingTyper(
             sortedImplicitSearches.map(kv => kv._1.toString -> kv._2)
           )
-        logger.info("Implicit searches by type", toLinkedHashMap(stringifiedSearchCounter))
+        logger.info("Implicit searches by type", stringifiedSearchCounter.toMap)
         ()
       }
-    }
-
-    private def showExpansion(expansion: (global.Tree, Int)): (String, Int) =
-      global.showCode(expansion._1) -> expansion._2
-
-    private def toLinkedHashMap[K, V](xs: List[(K, V)]): LinkedHashMap[K, V] = {
-      val builder = LinkedHashMap.newBuilder[K, V]
-      builder.++=(xs)
-      builder.result()
     }
   }
 }
