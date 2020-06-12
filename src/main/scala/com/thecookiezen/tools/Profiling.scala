@@ -191,9 +191,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
 
         // Create timer and unregister it so that it is invisible in console output
         val prefix = s"  $targetType"
-        val perTypeTimer = implicitsTimers
-          .getOrElseUpdate(targetType, statistics.newTimer(prefix, "typer"))
-        registeredQuantities.remove(s"/$prefix")
+        val perTypeTimer = implicitsTimers.getOrElseUpdate(targetType, registerTyperTimerFor(prefix))
 
         // Create non-cumulative timer for the search and unregister it too
         val searchId = search.searchId
