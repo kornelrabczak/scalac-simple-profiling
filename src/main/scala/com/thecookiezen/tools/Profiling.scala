@@ -8,6 +8,8 @@ import scala.collection.mutable
 import com.thecookiezen.ProfilerPlugin.PluginConfig
 import com.thecookiezen.tools.Profiling.MacroInfo
 import pprint.TPrint
+import com.thecookiezen.metrics.Timer
+import com.thecookiezen.metrics.Timer.TimerSnapshot
 
 import scala.jdk.CollectionConverters._
 
@@ -122,13 +124,6 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
     } else List(implicitFlamegraphFile)
   }
 
-  private val registeredQuantities = QuantitiesHijacker.getRegisteredQuantities(global)
-  def registerTyperTimerFor(prefix: String): statistics.Timer = {
-    val typerTimer = statistics.newTimer(prefix, "typer")
-    registeredQuantities.remove(s"/$prefix")
-    typerTimer
-  }
-
   private def typeToString(`type`: Type): String =
     global.exitingTyper(`type`.toLongString).trim
 
@@ -152,20 +147,19 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
   }
 
   private object ProfilingAnalyzerPlugin extends global.analyzer.AnalyzerPlugin {
-    private val implicitsTimers = perRunCaches.newAnyRefMap[Type, statistics.Timer]()
+    private val implicitsTimers = perRunCaches.newAnyRefMap[Type, Timer]()
     private val stackedNanos = perRunCaches.newMap[Int, Long]()
     private val stackedNames = perRunCaches.newMap[Int, List[String]]()
-    private val searchIdsToTimers = perRunCaches.newMap[Int, statistics.Timer]()
+    private val searchIdsToTimers = perRunCaches.newMap[Int, Timer]()
     private val searchIdChildren = perRunCaches.newMap[Int, List[analyzer.ImplicitSearch]]()
 
     def getImplicitStacks = FoldableStack.fold("search")(stackedNames, stackedNanos)
 
-    private def getImplicitTimerFor(candidate: Type): statistics.Timer =
+    private def getImplicitTimerFor(candidate: Type): Timer =
       implicitsTimers.getOrElse(candidate, sys.error(s"Timer for ${candidate} doesn't exist"))
 
-    private def getSearchTimerFor(searchId: Int): statistics.Timer = {
-      searchIdsToTimers
-        .getOrElse(searchId, sys.error(s"Missing non-cumulative timer for $searchId"))
+    private def getSearchTimerFor(searchId: Int): Timer = {
+      searchIdsToTimers.getOrElse(searchId, sys.error(s"Missing non-cumulative timer for $searchId"))
     }
 
     override def pluginsNotifyImplicitSearch(search: global.analyzer.ImplicitSearch): Unit = {
@@ -175,9 +169,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
 
         // Stop counter of dependant implicit search
         implicitsStack.headOption.foreach {
-          case (search, _, searchStart) =>
-            val searchTimer = getSearchTimerFor(search.searchId)
-            statistics.stopTimer(searchTimer, searchStart)
+          case (search, _, searchStart) => getSearchTimerFor(search.searchId).stop(searchStart)
         }
 
         // We add ourselves to the child list of our parent implicit search
@@ -191,17 +183,17 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
 
         // Create timer and unregister it so that it is invisible in console output
         val prefix = s"  $targetType"
-        val perTypeTimer = implicitsTimers.getOrElseUpdate(targetType, registerTyperTimerFor(prefix))
+        val perTypeTimer = implicitsTimers.getOrElseUpdate(targetType, Timer(prefix))
 
         // Create non-cumulative timer for the search and unregister it too
         val searchId = search.searchId
         val searchPrefix = s"  implicit search ${searchId}"
-        val searchTimer = registerTyperTimerFor(searchPrefix)
+        val searchTimer = Timer(searchPrefix)
         searchIdsToTimers.+=(searchId -> searchTimer)
 
         // Start the timer as soon as possible
-        val implicitTypeStart = statistics.startTimer(perTypeTimer)
-        val searchStart = statistics.startTimer(searchTimer)
+        val implicitTypeStart = perTypeTimer.start
+        val searchStart = searchTimer.start
 
         // Update all timers and counters
         val typeCounter = implicitSearchesByType.getOrElse(targetType, 0)
@@ -229,8 +221,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
           def missing(name: String): Nothing =
             sys.error(s"Missing $name for $searchId ($targetType).")
 
-          val forcedExpansions =
-            ProfilingMacroPlugin.searchIdsToMacroStates.getOrElse(searchId, Nil)
+          val forcedExpansions = ProfilingMacroPlugin.searchIdsToMacroStates.getOrElse(searchId, Nil)
           val expandedStr = s"(expanded macros ${forcedExpansions.size})"
 
           // Detect macro name if the type we get comes from a macro to add it to the stack
@@ -286,7 +277,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
 
           // Save the nanos for this implicit search
           val searchTimer = getSearchTimerFor(searchId)
-          statistics.stopTimer(searchTimer, searchStart)
+          searchTimer.stop(searchStart)
           val previousNanos = stackedNanos.getOrElse(searchId, 0L)
           stackedNanos.+=((searchId, searchTimer.nanos + previousNanos))
         }
@@ -296,15 +287,14 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
         implicitsStack = previousImplicits.headOption match {
           case Some((prevSearch, prevImplicitTypeStart, _)) =>
             stopTimerFlamegraph(Some(prevSearch))
-            statistics.stopTimer(timer, implicitTypeStart)
-            val newPrevStart = statistics.startTimer(getSearchTimerFor(prevSearch.searchId))
+            timer.stop(implicitTypeStart)
+            val newPrevStart = getSearchTimerFor(prevSearch.searchId).start
             (prevSearch, prevImplicitTypeStart, newPrevStart) :: previousImplicits.tail
           case None =>
             stopTimerFlamegraph(None)
-            statistics.stopTimer(timer, implicitTypeStart)
+            timer.stop(implicitTypeStart)
             previousImplicits
         }
-
       }
     }
   }
@@ -324,7 +314,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
   case class MacroEntry(
       id: Int,
       originalPt: Type,
-      start: statistics.TimerSnapshot,
+      start: TimerSnapshot,
       state: Option[MacroState]
   )
 
@@ -338,7 +328,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
 
     val macroInfos = perRunCaches.newAnyRefMap[Position, MacroInfo]
     val searchIdsToMacroStates = perRunCaches.newMap[Int, List[MacroState]]
-    private val macroIdsToTimers = perRunCaches.newMap[Int, statistics.Timer]()
+    private val macroIdsToTimers = perRunCaches.newMap[Int, Timer]()
     private val macroChildren = perRunCaches.newMap[Int, List[MacroEntry]]()
     private val stackedNanos = perRunCaches.newMap[Int, Long]()
     private val stackedNames = perRunCaches.newMap[Int, List[String]]()
@@ -363,14 +353,13 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
 
           // Let's first stop the previous timer to have consistent times for the flamegraph
           prevData.foreach {
-            case (prevTimer, prev) => statistics.stopTimer(prevTimer, prev.start)
+            case (prevTimer, prev) => prevTimer.stop(prev.start)
           }
 
           // Let's create our own timer
-          val searchPrefix = s"  macro ${macroId}"
-          val macroTimer = registerTyperTimerFor(searchPrefix)
+          val macroTimer = Timer(s"macro ${macroId}")
           macroIdsToTimers += ((macroId, macroTimer))
-          val start = statistics.startTimer(macroTimer)
+          val start = macroTimer.start
 
           val entry = MacroEntry(macroId, pt, start, None)
 
@@ -420,7 +409,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
                   }
                 }
 
-                statistics.stopTimer(macroTimer, head.start)
+                macroTimer.stop(head.start)
                 val previousNanos = stackedNanos.getOrElse(macroId, 0L)
 
                 // Updates expansionNanos time after super.apply() for MacroInfo at the specified position
@@ -433,7 +422,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
                 prevData match {
                   case Some((prevTimer, prev)) =>
                     // Let's restart the timer of the previous macro expansion
-                    val newStart = statistics.startTimer(prevTimer)
+                    val newStart = prevTimer.start
                     // prev is the head of `parents`, so let's replace it on stack with the new start
                     macrosStack = prev.copy(start = newStart) :: parents.tail
                   case None => macrosStack = parents
