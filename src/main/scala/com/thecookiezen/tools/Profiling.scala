@@ -9,6 +9,8 @@ import com.thecookiezen.ProfilerPlugin.PluginConfig
 import com.thecookiezen.tools.Profiling.MacroInfo
 import pprint.TPrint
 
+import scala.jdk.CollectionConverters._
+
 final class Profiling[G <: Global](override val global: G, config: PluginConfig, logger: Logger[G]) extends ProfilingStats {
   import global._
 
@@ -41,11 +43,11 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
   lazy val macroProfiler: MacroProfiler = {
     import ProfilingMacroPlugin.macroInfos
     val perCallSite = macroInfos.toMap
-    
+
     val perFile = groupPerFile(perCallSite)(MacroInfo.Empty, _ + _)
       .mapValues(i => i.copy(expansionNanos = toMillis(i.expansionNanos)))
       .toMap
-    
+
       val inTotal = MacroInfo.aggregate(perFile.valuesIterator)
 
     val callSiteNanos = perCallSite
@@ -111,11 +113,11 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
     val macroGraphName = s"macros-$randomId"
     val implicitFlamegraphFile = outputDir.resolve(s"$implicitGraphName.flamegraph")
     val implicits = ProfilingAnalyzerPlugin.getImplicitStacks
-    Files.write(implicitFlamegraphFile, implicits, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
+    Files.write(implicitFlamegraphFile, implicits.asJava, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
     if (config.generateMacroFlamegraph) {
       val macroFlamegraphFile = outputDir.resolve(s"$macroGraphName.flamegraph")
       val macroStacks = ProfilingMacroPlugin.getMacroStacks
-      Files.write(macroFlamegraphFile, macroStacks, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
+      Files.write(macroFlamegraphFile, macroStacks.asJava, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
       List(implicitFlamegraphFile, macroFlamegraphFile)
     } else List(implicitFlamegraphFile)
   }
@@ -135,20 +137,19 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
   private var implicitsStack: List[Entry] = Nil
 
   object FoldableStack {
-    def fold(name: String)(names: mutable.Map[Int, List[String]], times: mutable.Map[Int, Long]): java.util.ArrayList[String] = {
-      val stacksJavaList = new java.util.ArrayList[String]()
+    def fold(name: String)(names: mutable.Map[Int, List[String]], times: mutable.Map[Int, Long]): mutable.Seq[String] = {
+      val stacks = mutable.Buffer[String]()
 
       times.foreach {
         case (id, nanos) =>
           val stackNames = names.getOrElse(id, sys.error(s"Stack name for $name id ${id} doesn't exist!"))
           val stackName = stackNames.mkString(";")
-          stacksJavaList.add(s"$stackName ${nanos / 1000}")
+          stacks += s"$stackName ${nanos / 1000}"
       }
 
-      java.util.Collections.sort(stacksJavaList)
-      stacksJavaList
+      stacks.sorted
     }
-  } 
+  }
 
   private object ProfilingAnalyzerPlugin extends global.analyzer.AnalyzerPlugin {
     private val implicitsTimers = perRunCaches.newAnyRefMap[Type, statistics.Timer]()
