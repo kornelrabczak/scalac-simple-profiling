@@ -3,6 +3,8 @@ version := "0.1.0-SNAPSHOT"
 organization := "com.thecookiezen"
 organizationName := "thecookiezen"
 
+scalacOptions ++= Seq("-deprecation", "-feature", "-Xfatal-warnings")
+
 lazy val root = (project in file("."))
   .settings(
     name := "scalac-simple-profiler",

@@ -47,12 +47,14 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
     val perCallSite = macroInfos.toMap
 
     val perFile = groupPerFile(perCallSite)(MacroInfo.Empty, _ + _)
+      .view
       .mapValues(i => i.copy(expansionNanos = toMillis(i.expansionNanos)))
       .toMap
 
       val inTotal = MacroInfo.aggregate(perFile.valuesIterator)
 
     val callSiteNanos = perCallSite
+      .view
       .mapValues(i => i.copy(expansionNanos = toMillis(i.expansionNanos)))
       .toMap
 
@@ -77,9 +79,9 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
   )
 
   lazy val implicitProfiler: ImplicitProfiler = {
-    val perCallSite = implicitSearchesByPos.mapValues(ImplicitInfo.apply).toMap
+    val perCallSite = implicitSearchesByPos.view.mapValues(ImplicitInfo.apply).toMap
     val perFile = groupPerFile[ImplicitInfo](perCallSite)(ImplicitInfo.Empty, _ + _)
-    val perType = implicitSearchesByType.mapValues(ImplicitInfo.apply).toMap
+    val perType = implicitSearchesByType.view.mapValues(ImplicitInfo.apply).toMap
     val inTotal = ImplicitInfo.aggregate(perFile.valuesIterator)
     ImplicitProfiler(perCallSite, perFile, perType, inTotal)
   }
