@@ -77,9 +77,9 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
   )
 
   lazy val implicitProfiler: ImplicitProfiler = {
-    val perCallSite = implicitSearchesByPos.toMap.mapValues(ImplicitInfo.apply).toMap
+    val perCallSite = implicitSearchesByPos.mapValues(ImplicitInfo.apply).toMap
     val perFile = groupPerFile[ImplicitInfo](perCallSite)(ImplicitInfo.Empty, _ + _)
-    val perType = implicitSearchesByType.toMap.mapValues(ImplicitInfo.apply).toMap
+    val perType = implicitSearchesByType.mapValues(ImplicitInfo.apply).toMap
     val inTotal = ImplicitInfo.aggregate(perFile.valuesIterator)
     ImplicitProfiler(perCallSite, perFile, perType, inTotal)
   }
@@ -87,7 +87,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
   // Copied from `TypeDiagnostics` to have expanded types in implicit search
   private object DealiasedType extends TypeMap {
     def apply(tp: Type): Type = tp match {
-      case TypeRef(pre, sym, _) if sym.isAliasType && !sym.isInDefaultNamespace =>
+      case TypeRef(_, sym, _) if sym.isAliasType && !sym.isInDefaultNamespace =>
         mapOver(tp.dealias)
       case _ => mapOver(tp)
     }
@@ -128,7 +128,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
     global.exitingTyper(`type`.toLongString).trim
 
   // Moving this here so that it's accessible to the macro plugin
-  private type Entry = (global.analyzer.ImplicitSearch, statistics.TimerSnapshot, statistics.TimerSnapshot)
+  private type Entry = (global.analyzer.ImplicitSearch, TimerSnapshot, TimerSnapshot)
   private var implicitsStack: List[Entry] = Nil
 
   object FoldableStack {
@@ -137,7 +137,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
 
       times.foreach {
         case (id, nanos) =>
-          val stackNames = names.getOrElse(id, sys.error(s"Stack name for $name id ${id} doesn't exist!"))
+          val stackNames = names.getOrElse(id, sys.error(s"Stack name for $name id $id doesn't exist!"))
           val stackName = stackNames.mkString(";")
           stacks += s"$stackName ${nanos / 1000}"
       }
@@ -153,10 +153,10 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
     private val searchIdsToTimers = perRunCaches.newMap[Int, Timer]()
     private val searchIdChildren = perRunCaches.newMap[Int, List[analyzer.ImplicitSearch]]()
 
-    def getImplicitStacks = FoldableStack.fold("search")(stackedNames, stackedNanos)
+    def getImplicitStacks: mutable.Seq[String] = FoldableStack.fold("search")(stackedNames, stackedNanos)
 
     private def getImplicitTimerFor(candidate: Type): Timer =
-      implicitsTimers.getOrElse(candidate, sys.error(s"Timer for ${candidate} doesn't exist"))
+      implicitsTimers.getOrElse(candidate, sys.error(s"Timer for $candidate doesn't exist"))
 
     private def getSearchTimerFor(searchId: Int): Timer = {
       searchIdsToTimers.getOrElse(searchId, sys.error(s"Missing non-cumulative timer for $searchId"))
@@ -181,13 +181,13 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
           case None => ()
         }
 
-        // Create timer and unregister it so that it is invisible in console output
-        val prefix = s"  $targetType"
+        // Create timer
+        val prefix = s"$targetType"
         val perTypeTimer = implicitsTimers.getOrElseUpdate(targetType, Timer(prefix))
 
-        // Create non-cumulative timer for the search and unregister it too
+        // Create non-cumulative timer for the search
         val searchId = search.searchId
-        val searchPrefix = s"  implicit search ${searchId}"
+        val searchPrefix = s"implicit search $searchId"
         val searchTimer = Timer(searchPrefix)
         searchIdsToTimers.+=(searchId -> searchTimer)
 
@@ -233,7 +233,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
                 analyzer.loadMacroImplBinding(expandeeSymbol) match {
                   case Some(a) =>
                     val l = if (errorTag.isEmpty) " _[i]" else errorTag
-                    s" (id ${searchId}) $expandedStr (tree from `${a.className}.${a.methName}`)$l"
+                    s" (id $searchId) $expandedStr (tree from `${a.className}.${a.methName}`)$l"
                   case None => s" $expandedStr $errorTag"
                 }
               case None => s" $expandedStr $errorTag"
@@ -254,9 +254,9 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
 
           if (config.printSearchIds.contains(searchId) || (result.isFailure && config.printFailedMacroImplicits)) {
             logger.info(
-              s"""implicit search ${searchId}:
+              s"""implicit search $searchId:
                  |  -> valid ${result.isSuccess}
-                 |  -> type `${typeForStack}`
+                 |  -> type `$typeForStack`
                  |  -> ${search.undet_s}
                  |  -> ${search.ctx_s}
                  |  -> tree:
@@ -357,7 +357,7 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
           }
 
           // Let's create our own timer
-          val macroTimer = Timer(s"macro ${macroId}")
+          val macroTimer = Timer(s"macro $macroId")
           macroIdsToTimers += ((macroId, macroTimer))
           val start = macroTimer.start
 
@@ -504,10 +504,9 @@ final class Profiling[G <: Global](override val global: G, config: PluginConfig,
           val callSitePos = expandee.pos
           val macroInfo = macroInfos.getOrElse(callSitePos, MacroInfo.Empty)
           val expandedMacros = macroInfo.expandedMacros + 1
-          val treeSize = 0 //macroInfo.expandedNodes + guessTreeSize(expanded)
 
           // Use 0L for the timer because it will be filled in by the caller `apply`
-          macroInfos.put(callSitePos, MacroInfo(expandedMacros, treeSize, 0L))
+          macroInfos.put(callSitePos, MacroInfo(expandedMacros, 0, 0L))
           expanded
         }
       }
